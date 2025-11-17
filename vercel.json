@@ -1,0 +1,17 @@
+{
+  "framework": "nextjs",
+  "buildCommand": "npm run build",
+  "devCommand": "npm run dev",
+  "installCommand": "npm install",
+  "outputDirectory": ".next",
+  "env": {
+    "TOOLKIT_API_URL": {
+      "description": "URL of your No-Code Architects Toolkit API (e.g., https://your-api.com or http://your-server:8080)",
+      "value": ""
+    },
+    "TOOLKIT_API_KEY": {
+      "description": "Your API key for authenticating with the Toolkit API",
+      "value": ""
+    }
+  }
+}
