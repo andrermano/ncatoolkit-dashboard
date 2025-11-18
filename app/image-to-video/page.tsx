@@ -1,635 +1,683 @@
 'use client';
 
-import { useState } from 'react';
-import {
-  Image as ImageIcon,
-  Video,
-  Loader2,
-  CheckCircle2,
-  AlertCircle,
-  Clock,
-  Download,
-  Link as LinkIcon,
-} from 'lucide-react';
+import React, { useState } from 'react';
+import Link from 'next/link';
 
-type RawJobResponse = {
+type ApiJob = {
   imageUrl: string;
-  id: number | string;
+  id?: number;
   ok: boolean;
   status: number;
-  data?: any;
+  data?: unknown;
   error?: string;
 };
 
-type JobStatus =
-  | 'queued'
-  | 'processing'
-  | 'completed'
-  | 'error'
-  | 'unknown';
-
-type Job = {
-  localId: string;          // ID interno que usamos no dashboard (1, 2, 3…)
+type UiJob = {
   imageUrl: string;
-  apiStatusCode: number;    // status HTTP do /v1/image/convert/video
-  initialResponse: any;     // resposta bruta da criação do job
-  toolkitJobId?: string;    // job_id do Toolkit
-  status: JobStatus;
-  statusMessage?: string;
-  isFinished: boolean;
+  id: number;
+  toolkitJobId?: string;
+  createStatus: number;
+  createOk: boolean;
+  createError?: string;
+  statusStage: 'pending' | 'processing' | 'finished' | 'error';
+  lastStatusMessage?: string;
   downloadUrl?: string | null;
-  error?: string;
-  latestStatusRaw?: any;    // última resposta do /v1/toolkit/job/status
+  rawStatus?: unknown;
 };
 
-type JobsApiResponse = {
-  jobs: RawJobResponse[];
-};
-
-type JobStatusApiResponse = {
-  jobs: {
-    id: string;
-    jobId: string;
-    imageUrl?: string;
-    ok: boolean;
-    httpStatus: number;
-    status: string;
-    isFinished: boolean;
-    downloadUrl?: string | null;
-    data?: any;
-    error?: string;
-  }[];
-};
-
-export default function ImageToVideoPage() {
-  const [folderUrl, setFolderUrl] = useState(
-    'https://storage.googleapis.com/nca-toolkit-manodread/Religioso/Video16-ER5',
-  );
-  const [prefix, setPrefix] = useState('cena_');
-  const [suffix, setSuffix] = useState('.png');
-  const [padding, setPadding] = useState(2); // "01", "02", etc.
-  const [startIndex, setStartIndex] = useState(1);
-  const [endIndex, setEndIndex] = useState(4);
-  const [lengthSeconds, setLengthSeconds] = useState(15);
-
-  const [jobs, setJobs] = useState<Job[]>([]);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [isPolling, setIsPolling] = useState(false);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
-
-  const totalFrames =
-    endIndex >= startIndex ? endIndex - startIndex + 1 : 0;
-
-  function buildImageUrl(index: number) {
-    const padded = String(index).padStart(padding, '0');
-    const base = folderUrl.replace(/\/+$/, '');
-    return `${base}/${prefix}${padded}${suffix}`;
+function extractVideoUrl(data: unknown): string | null {
+  if (!data || typeof data !== 'object') {
+    return null;
   }
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
+  const visited = new Set<unknown>();
+
+  function search(obj: unknown): string | null {
+    if (!obj || typeof obj !== 'object') {
+      return null;
+    }
+    if (visited.has(obj)) {
+      return null;
+    }
+    visited.add(obj);
+
+    const values = Object.values(obj as Record<string, unknown>);
+    for (const value of values) {
+      if (typeof value === 'string') {
+        const lower = value.toLowerCase();
+        const isHttp = lower.startsWith('http://') || lower.startsWith('https://');
+        const looksLikeVideo =
+          lower.includes('.mp4') ||
+          lower.includes('.webm') ||
+          lower.includes('.mov') ||
+          lower.includes('.mkv');
+
+        if (isHttp && looksLikeVideo) {
+          return value;
+        }
+      } else if (value && typeof value === 'object') {
+        const nested = search(value);
+        if (nested) return nested;
+      }
+    }
+    return null;
+  }
+
+  return search(data);
+}
+
+function isStatusFinished(data: unknown): boolean {
+  if (!data || typeof data !== 'object') {
+    return false;
+  }
+
+  const obj = data as Record<string, unknown>;
+
+  let explicitFlag = false;
+  if (typeof obj.isFinished === 'boolean') {
+    explicitFlag = obj.isFinished;
+  }
+
+  let message = '';
+  if (typeof obj.message === 'string') {
+    message = obj.message;
+  }
+
+  let statusText = '';
+  if (typeof obj.status === 'string') {
+    statusText = obj.status;
+  }
+
+  const combined = (message + ' ' + statusText).toLowerCase();
+
+  const textFinished =
+    combined.includes('complete') ||
+    combined.includes('completed') ||
+    combined.includes('finished') ||
+    combined.includes('done') ||
+    combined.includes('error') ||
+    combined.includes('failed');
+
+  return explicitFlag || textFinished;
+}
+
+export default function ImageToVideoPage() {
+  const [imageUrlsText, setImageUrlsText] = useState('');
+  const [duration, setDuration] = useState<number>(15);
+  const [baseId, setBaseId] = useState<number>(1);
+  const [imageUrlField, setImageUrlField] = useState('image_url');
+  const [extraPayloadText, setExtraPayloadText] = useState(
+    JSON.stringify(
+      {
+        webhook_url: '',
+      },
+      null,
+      2,
+    ),
+  );
+
+  const [jobs, setJobs] = useState<UiJob[]>([]);
+  const [loadingCreate, setLoadingCreate] = useState(false);
+  const [loadingStatus, setLoadingStatus] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  async function handleSubmit(event: React.FormEvent) {
+    event.preventDefault();
     setErrorMessage(null);
     setJobs([]);
 
-    if (endIndex < startIndex) {
-      setErrorMessage('O índice final deve ser maior ou igual ao inicial.');
+    const imageUrls = imageUrlsText
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+
+    if (imageUrls.length === 0) {
+      setErrorMessage('Informe pelo menos uma URL de imagem (uma por linha).');
       return;
     }
 
+    if (!Number.isFinite(duration) || duration <= 0) {
+      setErrorMessage('Informe uma duração em segundos maior que 0.');
+      return;
+    }
+
+    if (!Number.isFinite(baseId)) {
+      setErrorMessage('O ID base deve ser um número válido.');
+      return;
+    }
+
+    let extraPayload: Record<string, unknown> = {};
+    if (extraPayloadText.trim().length > 0) {
+      try {
+        extraPayload = JSON.parse(extraPayloadText);
+      } catch (error) {
+        setErrorMessage(
+          'Payload JSON extra inválido: ' + (error as Error).message,
+        );
+        return;
+      }
+    }
+
+    setLoadingCreate(true);
+
     try {
-      setIsSubmitting(true);
-
-      const payload = {
-        folderUrl,
-        prefix,
-        suffix,
-        padding,
-        startIndex,
-        endIndex,
-        length: lengthSeconds,
-      };
-
       const res = await fetch('/api/toolkit/image-to-video-batch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          imageUrls,
+          imageUrlField,
+          duration,
+          baseId,
+          extraPayload,
+        }),
       });
 
+      const json = await res.json();
+
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(
-          data.error ??
-            `Erro ao criar jobs. Status: ${res.status}`,
+        setErrorMessage(
+          json?.error ??
+            `Erro ao criar jobs (status ${res.status}). Verifique o Toolkit API.`,
         );
+        return;
       }
 
-      const data = (await res.json()) as JobsApiResponse;
+      const apiJobs = (json.jobs ?? []) as ApiJob[];
 
-      const initialJobs: Job[] = (data.jobs || []).map((j) => {
-        const localId = String(j.id);
-        const jobId =
-          j.data?.job_id ??
-          j.data?.jobId ??
-          j.data?.jobID ??
-          undefined;
+      const uiJobs: UiJob[] = apiJobs.map((job, index) => {
+        const data = job.data as Record<string, unknown> | undefined;
 
-        const message =
-          (j.data?.message as string | undefined) ??
-          (j.data?.status as string | undefined) ??
-          (j.ok ? 'processing' : 'error');
+        let toolkitJobId: string | undefined = undefined;
+        if (data && typeof data.job_id === 'string') {
+          toolkitJobId = data.job_id;
+        }
 
-        const hasError = !j.ok;
+        let lastStatusMessage: string | undefined = undefined;
+        if (data && typeof data.message === 'string') {
+          lastStatusMessage = data.message;
+        }
+
+        const initialStatus: UiJob['statusStage'] = job.ok
+          ? 'processing'
+          : 'error';
+
+        const downloadUrl = data ? extractVideoUrl(data) : null;
 
         return {
-          localId,
-          imageUrl: j.imageUrl,
-          apiStatusCode: j.status,
-          initialResponse: j.data,
-          toolkitJobId: jobId,
-          status: hasError ? 'error' : 'processing',
-          statusMessage: message,
-          isFinished: hasError, // se já deu erro, não precisa poll
-          error: j.error,
-          downloadUrl: null,
+          imageUrl: job.imageUrl,
+          id: typeof job.id === 'number' ? job.id : index + 1,
+          toolkitJobId,
+          createStatus: job.status,
+          createOk: job.ok,
+          createError: job.error,
+          statusStage: initialStatus,
+          lastStatusMessage,
+          downloadUrl,
+          rawStatus: undefined,
         };
       });
 
-      setJobs(initialJobs);
-
-      // assim que criar os jobs, já começa a monitorar até concluir
-      await monitorJobs(initialJobs);
-    } catch (err: any) {
-      console.error(err);
+      setJobs(uiJobs);
+    } catch (error) {
       setErrorMessage(
-        err?.message ??
-          'Erro inesperado ao criar jobs. Verifique o console.',
+        'Erro de rede ao conversar com o backend: ' +
+          (error as Error).message,
       );
     } finally {
-      setIsSubmitting(false);
+      setLoadingCreate(false);
     }
   }
 
-  async function monitorJobs(initialJobs?: Job[]) {
-    const jobsToTrack = initialJobs ?? jobs;
+  async function handleCheckStatus() {
+    if (jobs.length === 0) return;
 
-    if (!jobsToTrack.length) return;
+    const jobIds = jobs
+      .map((job) => job.toolkitJobId)
+      .filter((id): id is string => typeof id === 'string' && id.length > 0);
 
-    // se nenhum job tem jobId, não há o que monitorar
-    if (!jobsToTrack.some((j) => j.toolkitJobId)) {
+    if (jobIds.length === 0) {
+      setErrorMessage(
+        'Nenhum job_id encontrado nas respostas. Verifique se o Toolkit está retornando job_id.',
+      );
       return;
     }
 
-    setIsPolling(true);
+    setLoadingStatus(true);
+    setErrorMessage(null);
 
     try {
-      let currentJobs = [...jobsToTrack];
+      const res = await fetch('/api/toolkit/job-status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jobIds }),
+      });
 
-      while (true) {
-        const pending = currentJobs.filter(
-          (j) => !j.isFinished && j.toolkitJobId,
+      const json = await res.json();
+
+      if (!res.ok) {
+        setErrorMessage(
+          json?.error ??
+            `Erro ao consultar status dos jobs (status ${res.status}).`,
         );
+        return;
+      }
 
-        if (!pending.length) break;
+      const statuses = (json.statuses ?? []) as {
+        jobId: string;
+        ok: boolean;
+        status: number;
+        data?: unknown;
+        error?: string;
+      }[];
 
-        const res = await fetch('/api/toolkit/job-status', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            jobs: pending.map((j) => ({
-              id: j.localId,
-              jobId: j.toolkitJobId!,
-              imageUrl: j.imageUrl,
-            })),
-          }),
-        });
+      setJobs((prev) =>
+        prev.map((job) => {
+          if (!job.toolkitJobId) return job;
+          const st = statuses.find((s) => s.jobId === job.toolkitJobId);
+          if (!st) return job;
 
-        if (!res.ok) {
-          const data = await res.json().catch(() => ({}));
-          console.error('Erro ao consultar status dos jobs:', data);
-          throw new Error(
-            data.error ??
-              `Erro ao consultar status dos jobs. Status: ${res.status}`,
-          );
-        }
+          const data = st.data;
+          const finished = isStatusFinished(data);
+          const videoUrl = data ? extractVideoUrl(data) : null;
 
-        const statusData = (await res.json()) as JobStatusApiResponse;
-
-        const updatedJobs = currentJobs.map((job) => {
-          const statusJob = statusData.jobs.find(
-            (s) => s.id === job.localId,
-          );
-          if (!statusJob) return job;
-
-          const statusText = statusJob.status ?? 'unknown';
-          const lower = statusText.toLowerCase();
-
-          const isFinished =
-            statusJob.isFinished ??
-            lower.includes('complete') ||
-              lower.includes('finished') ||
-              lower.includes('done') ||
-              lower.includes('error') ||
-              lower.includes('failed');
-
-          let status: JobStatus = job.status;
-          if (isFinished) {
-            status = lower.includes('error')
-              ? 'error'
-              : 'completed';
+          let newStage: UiJob['statusStage'] = job.statusStage;
+          if (finished) {
+            newStage = st.ok ? 'finished' : 'error';
+          } else if (st.ok) {
+            newStage = 'processing';
           } else {
-            status = 'processing';
+            newStage = 'error';
+          }
+
+          let lastStatusMessage = job.lastStatusMessage;
+          if (
+            data &&
+            typeof (data as Record<string, unknown>).message === 'string'
+          ) {
+            lastStatusMessage = (data as Record<string, unknown>)
+              .message as string;
           }
 
           return {
             ...job,
-            status,
-            statusMessage: statusText,
-            isFinished,
-            downloadUrl:
-              statusJob.downloadUrl ?? job.downloadUrl ?? null,
-            latestStatusRaw: statusJob.data,
-            error: statusJob.error ?? job.error,
+            statusStage: newStage,
+            lastStatusMessage,
+            downloadUrl: videoUrl ?? job.downloadUrl ?? null,
+            rawStatus: data,
           };
-        });
-
-        currentJobs = updatedJobs;
-        setJobs(updatedJobs);
-
-        const allFinished = updatedJobs.every((j) => j.isFinished);
-        if (allFinished) break;
-
-        // espera 5s antes da próxima rodada
-        await new Promise((resolve) => setTimeout(resolve, 5000));
-      }
-    } catch (err: any) {
-      console.error(err);
+        }),
+      );
+    } catch (error) {
       setErrorMessage(
-        err?.message ??
-          'Erro ao monitorar o status dos jobs. Veja o console.',
+        'Erro de rede ao consultar status: ' +
+          (error as Error).message,
       );
     } finally {
-      setIsPolling(false);
+      setLoadingStatus(false);
     }
   }
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-50">
-      {/* topo */}
-      <header className="border-b border-slate-800 bg-slate-950/80 backdrop-blur">
-        <div className="mx-auto flex max-w-5xl items-center justify-between px-4 py-4">
-          <div className="flex items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-500/10 text-blue-400">
-              <Video className="h-5 w-5" />
-            </div>
-            <div>
-              <h1 className="text-lg font-semibold">
-                Image → Video Batch
-              </h1>
-              <p className="text-xs text-slate-400">
-                Gera vídeos do No-Code Architects Toolkit a partir
-                de uma sequência de imagens.
-              </p>
-            </div>
+    <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
+      {/* Header */}
+      <header className="bg-white border-b border-gray-200 shadow-sm">
+        <div className="container mx-auto px-4 py-4 flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold text-gray-900">
+              Image → Video (batch)
+            </h1>
+            <p className="text-gray-600 text-sm mt-1">
+              Cria vários jobs no endpoint{' '}
+              <code className="font-mono text-xs bg-gray-100 px-1 py-0.5 rounded">
+                /v1/image/convert/video
+              </code>{' '}
+              a partir de uma lista de URLs de imagem e permite consultar o
+              status para baixar os vídeos.
+            </p>
           </div>
-          <div className="text-xs text-slate-400">
-            <span className="rounded-full bg-slate-900/70 px-3 py-1">
-              Dashboard v1.2.0
-            </span>
+          <div className="flex flex-col items-end gap-1">
+            <Link
+              href="/"
+              className="text-xs text-blue-600 hover:text-blue-800 hover:underline"
+            >
+              ← Voltar para o dashboard
+            </Link>
+            <span className="text-xs text-gray-500">v1.1.0</span>
           </div>
         </div>
       </header>
 
-      <main className="mx-auto max-w-5xl px-4 py-6">
-        {/* card principal */}
-        <section className="grid gap-6 lg:grid-cols-[2fr,3fr]">
-          {/* formulário */}
-          <form
-            onSubmit={handleSubmit}
-            className="space-y-5 rounded-2xl border border-slate-800 bg-slate-900/60 p-5 shadow-lg shadow-black/40"
-          >
-            <div className="flex items-center gap-2">
-              <div className="flex h-8 w-8 items-center justify-center rounded-full bg-blue-500/10 text-blue-400">
-                <ImageIcon className="h-4 w-4" />
-              </div>
-              <div>
-                <h2 className="text-sm font-semibold">
-                  Configuração das imagens
-                </h2>
-                <p className="text-xs text-slate-400">
-                  Usa padrão de nome como{' '}
-                  <span className="font-mono">
-                    cena_01.png, cena_02.png...
-                  </span>
-                </p>
-              </div>
-            </div>
+      {/* Main */}
+      <main className="container mx-auto px-4 py-8">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* Formulário principal */}
+          <section className="lg:col-span-2">
+            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+              <h2 className="text-lg font-semibold text-gray-900 mb-1">
+                Configurar jobs
+              </h2>
+              <p className="text-sm text-gray-600 mb-4">
+                Para cada linha de URL, será criado um payload com o formato:{' '}
+                <code className="font-mono text-xs bg-gray-100 px-1 py-0.5 rounded">
+                  &#123;&quot;image_url&quot;: &quot;...&quot;,
+                  &quot;length&quot;: 15, &quot;id&quot;: &quot;52&quot;,
+                  ...&#125;
+                </code>
+              </p>
 
-            <div className="space-y-3">
-              <label className="block text-xs font-medium text-slate-300">
-                Pasta base (GCS / S3 / HTTP)
-              </label>
-              <input
-                type="text"
-                className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs outline-none ring-blue-500/50 focus:border-blue-500 focus:ring-1"
-                value={folderUrl}
-                onChange={(e) => setFolderUrl(e.target.value)}
-                placeholder="https://storage.googleapis.com/..."
-              />
-
-              <div className="grid grid-cols-3 gap-3">
-                <div>
-                  <label className="block text-xs font-medium text-slate-300">
-                    Prefixo
+              <form onSubmit={handleSubmit} className="space-y-5">
+                {/* URLs */}
+                <div className="space-y-2">
+                  <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wide">
+                    Image URLs (uma por linha)
                   </label>
-                  <input
-                    type="text"
-                    className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs outline-none ring-blue-500/50 focus:border-blue-500 focus:ring-1"
-                    value={prefix}
-                    onChange={(e) => setPrefix(e.target.value)}
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-slate-300">
-                    Sufixo / extensão
-                  </label>
-                  <input
-                    type="text"
-                    className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs outline-none ring-blue-500/50 focus:border-blue-500 focus:ring-1"
-                    value={suffix}
-                    onChange={(e) => setSuffix(e.target.value)}
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-slate-300">
-                    Zero padding
-                  </label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={6}
-                    className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs outline-none ring-blue-500/50 focus:border-blue-500 focus:ring-1"
-                    value={padding}
-                    onChange={(e) =>
-                      setPadding(Number(e.target.value) || 0)
+                  <textarea
+                    className="h-32 w-full rounded-md border border-gray-300 bg-gray-50 px-3 py-2 text-xs font-mono text-gray-900 shadow-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                    placeholder={
+                      'https://storage.googleapis.com/bucket/imagem_01.png\nhttps://storage.googleapis.com/bucket/imagem_02.png\n...'
                     }
+                    value={imageUrlsText}
+                    onChange={(e) => setImageUrlsText(e.target.value)}
                   />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-3 gap-3 pt-1">
-                <div>
-                  <label className="block text-xs font-medium text-slate-300">
-                    Índice inicial
-                  </label>
-                  <input
-                    type="number"
-                    min={1}
-                    className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs outline-none ring-blue-500/50 focus:border-blue-500 focus:ring-1"
-                    value={startIndex}
-                    onChange={(e) =>
-                      setStartIndex(Number(e.target.value) || 0)
-                    }
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-slate-300">
-                    Índice final
-                  </label>
-                  <input
-                    type="number"
-                    min={startIndex}
-                    className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs outline-none ring-blue-500/50 focus:border-blue-500 focus:ring-1"
-                    value={endIndex}
-                    onChange={(e) =>
-                      setEndIndex(Number(e.target.value) || 0)
-                    }
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-slate-300">
-                    Duração (s)
-                  </label>
-                  <input
-                    type="number"
-                    min={1}
-                    className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs outline-none ring-blue-500/50 focus:border-blue-500 focus:ring-1"
-                    value={lengthSeconds}
-                    onChange={(e) =>
-                      setLengthSeconds(Number(e.target.value) || 0)
-                    }
-                  />
-                </div>
-              </div>
-            </div>
-
-            <div className="flex items-center justify-between text-xs text-slate-400">
-              <div className="flex items-center gap-2">
-                <Clock className="h-3.5 w-3.5" />
-                <span>
-                  Frames: {totalFrames || 0}{' '}
-                  {totalFrames > 0 && (
-                    <>
-                      · Tempo total ~
-                      {totalFrames * lengthSeconds}s
-                    </>
-                  )}
-                </span>
-              </div>
-              <div className="flex items-center gap-1 text-[10px]">
-                <span className="rounded-full bg-slate-900 px-2 py-0.5">
-                  Exemplo:{' '}
-                  <span className="font-mono">
-                    {buildImageUrl(startIndex)}
-                  </span>
-                </span>
-              </div>
-            </div>
-
-            {errorMessage && (
-              <div className="flex items-start gap-2 rounded-lg border border-red-500/40 bg-red-950/40 px-3 py-2 text-xs text-red-100">
-                <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" />
-                <span>{errorMessage}</span>
-              </div>
-            )}
-
-            <div className="flex items-center gap-2 pt-2">
-              <button
-                type="submit"
-                disabled={isSubmitting}
-                className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-xs font-semibold text-white shadow-lg shadow-blue-500/30 hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {isSubmitting ? (
-                  <>
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    Enviando jobs...
-                  </>
-                ) : (
-                  <>
-                    <Video className="h-4 w-4" />
-                    Enviar e aguardar vídeos
-                  </>
-                )}
-              </button>
-
-              <button
-                type="button"
-                onClick={() => monitorJobs()}
-                disabled={isPolling || !jobs.length}
-                className="inline-flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-[11px] font-medium text-slate-200 hover:border-blue-500 hover:text-blue-200 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {isPolling ? (
-                  <>
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    Monitorando status...
-                  </>
-                ) : (
-                  <>
-                    <Clock className="h-3.5 w-3.5" />
-                    Consultar status novamente
-                  </>
-                )}
-              </button>
-            </div>
-
-            <p className="text-[10px] text-slate-500">
-              Esta página envia um job para cada imagem usando o
-              endpoint <code>/v1/image/convert/video</code> e, em
-              seguida, consulta <code>/v1/toolkit/job/status</code>{' '}
-              até o vídeo ficar pronto.
-            </p>
-          </form>
-
-          {/* painel de resultados */}
-          <section className="space-y-3 rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <div className="flex h-8 w-8 items-center justify-center rounded-full bg-emerald-500/10 text-emerald-400">
-                  <CheckCircle2 className="h-4 w-4" />
-                </div>
-                <div>
-                  <h2 className="text-sm font-semibold">
-                    Resultados dos jobs
-                  </h2>
-                  <p className="text-xs text-slate-400">
-                    Veja o status e faça o download dos vídeos
-                    gerados.
+                  <p className="text-[11px] text-gray-500">
+                    Cada linha vira um job separado na NCA Toolkit API.
                   </p>
                 </div>
-              </div>
-              <span className="rounded-full bg-slate-900 px-2 py-1 text-[10px] text-slate-400">
-                {jobs.length} job(s)
-              </span>
+
+                {/* Duração + ID base */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-1">
+                    <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wide">
+                      Duração (length) em segundos
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      className="w-full rounded-md border border-gray-300 bg-gray-50 px-3 py-2 text-sm text-gray-900 shadow-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                      value={duration}
+                      onChange={(e) =>
+                        setDuration(
+                          e.target.value === ''
+                            ? 0
+                            : Number(e.target.value),
+                        )
+                      }
+                    />
+                    <p className="text-[11px] text-gray-500">
+                      Este valor será enviado como{' '}
+                      <code className="font-mono text-[11px]">
+                        length
+                      </code>{' '}
+                      em todos os jobs.
+                    </p>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wide">
+                      ID base
+                    </label>
+                    <input
+                      type="number"
+                      className="w-full rounded-md border border-gray-300 bg-gray-50 px-3 py-2 text-sm text-gray-900 shadow-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                      value={baseId}
+                      onChange={(e) =>
+                        setBaseId(
+                          e.target.value === ''
+                            ? 0
+                            : Number(e.target.value),
+                        )
+                      }
+                    />
+                    <p className="text-[11px] text-gray-500">
+                      O primeiro job recebe{' '}
+                      <code className="font-mono text-[11px]">id</code>{' '}
+                      igual a este valor (como string), o próximo +1, etc.
+                    </p>
+                  </div>
+                </div>
+
+                {/* Nome do campo de URL */}
+                <div className="space-y-1">
+                  <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wide">
+                    Nome do campo da URL da imagem
+                  </label>
+                  <input
+                    className="w-full max-w-xs rounded-md border border-gray-300 bg-gray-50 px-3 py-2 text-sm text-gray-900 shadow-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                    value={imageUrlField}
+                    onChange={(e) => setImageUrlField(e.target.value)}
+                  />
+                  <p className="text-[11px] text-gray-500">
+                    Normalmente é{' '}
+                    <code className="font-mono text-[11px]">
+                      image_url
+                    </code>
+                    , igual ao que você já usa no n8n.
+                  </p>
+                </div>
+
+                {/* Payload extra */}
+                <div className="space-y-2">
+                  <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wide">
+                    Payload extra (JSON opcional)
+                  </label>
+                  <textarea
+                    className="h-32 w-full rounded-md border border-gray-300 bg-gray-50 px-3 py-2 text-xs font-mono text-gray-900 shadow-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                    value={extraPayloadText}
+                    onChange={(e) => setExtraPayloadText(e.target.value)}
+                  />
+                  <p className="text-[11px] text-gray-500">
+                    Tudo que for definido aqui será mesclado no payload de
+                    cada job. Campos{' '}
+                    <code className="font-mono text-[11px]">
+                      {imageUrlField}
+                    </code>
+                    ,{' '}
+                    <code className="font-mono text-[11px]">
+                      length
+                    </code>{' '}
+                    e{' '}
+                    <code className="font-mono text-[11px]">id</code> são
+                    preenchidos automaticamente.
+                  </p>
+                </div>
+
+                {/* Botão criar jobs */}
+                <div className="pt-2 flex flex-wrap gap-3 items-center">
+                  <button
+                    type="submit"
+                    disabled={loadingCreate}
+                    className="inline-flex items-center justify-center rounded-md bg-blue-600 px-5 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {loadingCreate
+                      ? 'Criando jobs…'
+                      : 'Criar jobs de vídeo'}
+                  </button>
+
+                  {jobs.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={handleCheckStatus}
+                      disabled={loadingStatus}
+                      className="inline-flex items-center justify-center rounded-md bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {loadingStatus
+                        ? 'Consultando status…'
+                        : 'Consultar status dos jobs'}
+                    </button>
+                  )}
+                </div>
+              </form>
             </div>
 
-            {!jobs.length && (
-              <div className="flex h-full min-h-[220px] flex-col items-center justify-center gap-3 text-center text-sm text-slate-500">
-                <Video className="h-8 w-8 text-slate-600" />
-                <div>
-                  Nenhum job ainda.
-                  <br />
-                  Configure as imagens e clique em{' '}
-                  <span className="font-medium">
-                    “Enviar e aguardar vídeos”
-                  </span>
-                  .
-                </div>
+            {/* Erro global */}
+            {errorMessage && (
+              <div className="mt-4 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800">
+                {errorMessage}
               </div>
             )}
+          </section>
 
-            {!!jobs.length && (
-              <div className="space-y-3">
-                {jobs.map((job) => (
-                  <div
-                    key={job.localId}
-                    className="flex flex-col gap-3 rounded-xl border border-slate-800 bg-slate-950/70 p-3 text-xs md:flex-row md:items-center md:justify-between"
-                  >
-                    <div className="flex flex-1 items-start gap-3">
-                      <div className="mt-0.5 flex h-7 w-7 items-center justify-center rounded-md bg-slate-900 text-slate-200">
-                        {job.status === 'completed' ? (
-                          <CheckCircle2 className="h-4 w-4 text-emerald-400" />
-                        ) : job.status === 'error' ? (
-                          <AlertCircle className="h-4 w-4 text-red-400" />
-                        ) : (
-                          <Loader2 className="h-4 w-4 animate-spin text-blue-400" />
+          {/* Dica / explicação */}
+          <aside className="space-y-4">
+            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
+              <h3 className="text-sm font-semibold text-gray-900 mb-2">
+                Como fica o payload final?
+              </h3>
+              <p className="text-xs text-gray-700 mb-2">
+                Para cada URL, o backend monta algo assim:
+              </p>
+              <pre className="text-[11px] leading-snug bg-gray-900 text-gray-100 rounded-md px-3 py-2 overflow-x-auto">
+{`{
+  "image_url": "https://storage.googleapis.com/.../cena_52.png",
+  "length": 15,
+  "id": "52",
+  "...payloadExtra"
+}`}
+              </pre>
+              <p className="text-[11px] text-gray-500 mt-2">
+                O comportamento é compatível com o que você já usa no n8n.
+              </p>
+            </div>
+
+            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
+              <h3 className="text-sm font-semibold text-gray-900 mb-2">
+                Dica
+              </h3>
+              <p className="text-xs text-gray-700">
+                Se a API retornar erro 400 com{' '}
+                <code className="font-mono text-[11px]">
+                  Additional properties
+                </code>
+                , remova do payload extra qualquer campo não reconhecido
+                pela sua instância da NCA.
+              </p>
+            </div>
+          </aside>
+        </div>
+
+        {/* Resultados / downloads */}
+        {jobs.length > 0 && (
+          <section className="mt-10">
+            <h2 className="text-lg font-semibold text-gray-900 mb-3">
+              Resultados dos jobs
+            </h2>
+            <div className="space-y-4">
+              {jobs.map((job) => (
+                <div
+                  key={`${job.imageUrl}-${job.id}`}
+                  className="bg-white rounded-lg shadow-sm border border-gray-200 p-4 text-sm"
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="flex-1 min-w-0">
+                      <span className="text-xs font-semibold text-gray-700">
+                        Imagem
+                      </span>
+                      <p className="font-mono text-xs text-gray-900 break-all">
+                        {job.imageUrl}
+                      </p>
+                      <p className="mt-1 text-[11px] text-gray-500">
+                        id: {job.id}
+                        {job.toolkitJobId && (
+                          <>
+                            {' '}
+                            • job_id:{' '}
+                            <span className="font-mono">
+                              {job.toolkitJobId}
+                            </span>
+                          </>
                         )}
-                      </div>
-                      <div className="space-y-1">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="rounded-full bg-slate-900 px-2 py-0.5 font-mono text-[10px] text-slate-300">
-                            #{job.localId}
-                          </span>
-                          <span className="truncate text-[11px] text-slate-300">
-                            {job.imageUrl}
-                          </span>
-                        </div>
-                        <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
-                          <span>
-                            Status:{' '}
-                            <span className="font-medium">
-                              {job.statusMessage ?? job.status}
-                            </span>
-                          </span>
-                          {job.toolkitJobId && (
-                            <span className="rounded-full bg-slate-900 px-2 py-0.5 font-mono text-[10px] text-slate-500">
-                              job_id: {job.toolkitJobId}
-                            </span>
-                          )}
-                          <span className="text-[10px] text-slate-500">
-                            HTTP {job.apiStatusCode}
-                          </span>
-                        </div>
-                      </div>
+                      </p>
+                      {job.lastStatusMessage && (
+                        <p className="mt-1 text-[11px] text-gray-500">
+                          status: {job.lastStatusMessage}
+                        </p>
+                      )}
                     </div>
+                    <div className="flex flex-col items-end gap-2">
+                      <span
+                        className={`inline-flex items-center rounded-full px-3 py-1 text-[11px] font-semibold ${
+                          job.statusStage === 'finished'
+                            ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                            : job.statusStage === 'error'
+                            ? 'bg-red-50 text-red-700 border border-red-200'
+                            : 'bg-yellow-50 text-yellow-700 border border-yellow-200'
+                        }`}
+                      >
+                        {job.statusStage === 'finished' &&
+                          'Finalizado'}
+                        {job.statusStage === 'processing' &&
+                          'Processando'}
+                        {job.statusStage === 'pending' && 'Pendente'}
+                        {job.statusStage === 'error' && 'Erro'}
+                      </span>
 
-                    <div className="flex flex-col items-stretch gap-2 md:w-52">
                       {job.downloadUrl && (
                         <a
                           href={job.downloadUrl}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="inline-flex items-center justify-center gap-2 rounded-lg bg-emerald-600 px-3 py-2 text-[11px] font-semibold text-white hover:bg-emerald-500"
+                          className="inline-flex items-center justify-center rounded-md bg-slate-800 px-3 py-1.5 text-[11px] font-semibold text-white shadow-sm hover:bg-slate-900"
                         >
-                          <Download className="h-3.5 w-3.5" />
                           Baixar vídeo
                         </a>
                       )}
-
-                      {!job.downloadUrl && job.status === 'completed' && (
-                        <span className="rounded-lg border border-amber-500/50 bg-amber-950/40 px-3 py-2 text-[11px] text-amber-100">
-                          Vídeo concluído, mas a URL não foi encontrada
-                          na resposta. Veja o JSON bruto.
-                        </span>
-                      )}
-
-                      <details className="group rounded-lg border border-slate-800 bg-slate-950/80 text-[10px] text-slate-300">
-                        <summary className="flex cursor-pointer items-center justify-between px-3 py-1.5">
-                          <span className="flex items-center gap-1.5">
-                            <LinkIcon className="h-3 w-3 text-slate-400" />
-                            JSON da API
-                          </span>
-                          <span className="text-slate-500 group-open:hidden">
-                            Ver
-                          </span>
-                          <span className="hidden text-slate-500 group-open:inline">
-                            Fechar
-                          </span>
-                        </summary>
-                        <div className="max-h-48 overflow-auto border-t border-slate-800 bg-slate-950 px-3 py-2 font-mono text-[9px] leading-snug text-slate-300">
-                          {JSON.stringify(
-                            job.latestStatusRaw ?? job.initialResponse,
-                            null,
-                            2,
-                          )}
-                        </div>
-                      </details>
                     </div>
                   </div>
-                ))}
-              </div>
-            )}
+
+                  {job.downloadUrl && (
+                    <div className="mt-3">
+                      <video
+                        src={job.downloadUrl}
+                        controls
+                        className="w-full max-w-md rounded-md border border-gray-200"
+                      />
+                    </div>
+                  )}
+
+                  {job.rawStatus && (
+                    <details className="mt-3">
+                      <summary className="cursor-pointer text-xs text-gray-700">
+                        Ver status bruto
+                      </summary>
+                      <pre className="mt-1 max-h-60 overflow-auto rounded-md bg-gray-900 text-gray-100 text-[11px] leading-snug px-3 py-2">
+                        {JSON.stringify(job.rawStatus as unknown, null, 2)}
+                      </pre>
+                    </details>
+                  )}
+
+                  {job.createError && (
+                    <p className="mt-2 text-xs text-red-700">
+                      Erro na criação do job: {job.createError}
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
           </section>
-        </section>
+        )}
       </main>
+
+      {/* Footer */}
+      <footer className="bg-white border-t border-gray-200 mt-16">
+        <div className="container mx-auto px-4 py-6">
+          <div className="text-center text-sm text-gray-600">
+            <p>
+              Built with Next.js • Powered by No-Code Architects Toolkit API
+            </p>
+            <p className="mt-2">
+              <a
+                href="https://github.com/Davidb-2107/no-code-architects-toolkit"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-blue-600 hover:text-blue-800 underline"
+              >
+                View on GitHub
+              </a>
+            </p>
+          </div>
+        </div>
+      </footer>
     </div>
   );
 }
