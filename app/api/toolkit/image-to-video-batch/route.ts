@@ -8,7 +8,7 @@ type BatchRequestBody = {
   imageUrls: string[];
   imageUrlField?: string;
   duration?: number;
-  baseId?: number;
+  baseId?: number | string;
   extraPayload?: Record<string, unknown>;
 };
 
@@ -45,77 +45,5 @@ export async function POST(req: NextRequest) {
   }
 
   const imageUrlField = body.imageUrlField || 'image_url';
-  const duration =
-    typeof body.duration === 'number' && body.duration > 0
-      ? body.duration
-      : 15;
-  const baseId =
-    typeof body.baseId === 'number' ? body.baseId : 1;
-  const extraPayload =
-    (body.extraPayload ?? {}) as Record<string, unknown>;
 
-  const jobs = await Promise.all(
-    imageUrls.map(async (imageUrl, index) => {
-      const payload: Record<string, unknown> = {
-        ...extraPayload,
-        [imageUrlField]: imageUrl,
-        length: duration,
-        id: baseId + index,
-      };
-
-      try {
-        const res = await fetch(
-          `${TOOLKIT_API_URL}/v1/image/convert/video`,
-          {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'x-api-key': TOOLKIT_API_KEY,
-            },
-            body: JSON.stringify(payload),
-          },
-        );
-
-        let data: unknown = null;
-        try {
-          data = await res.json();
-        } catch {
-          // se não for JSON, ignoramos ou guardamos como null
-        }
-
-        if (!res.ok) {
-          return {
-            imageUrl,
-            id: baseId + index,
-            ok: false,
-            status: res.status,
-            data,
-            error:
-              (data as any)?.message ??
-              `Toolkit retornou status ${res.status}.`,
-          };
-        }
-
-        return {
-          imageUrl,
-          id: baseId + index,
-          ok: true,
-          status: res.status,
-          data,
-        };
-      } catch (error: any) {
-        return {
-          imageUrl,
-          id: baseId + index,
-          ok: false,
-          status: 500,
-          error:
-            error?.message ??
-            'Erro de rede ao chamar a NCA Toolkit API.',
-        };
-      }
-    }),
-  );
-
-  return NextResponse.json({ jobs }, { status: 200 });
-}
+  const durat
