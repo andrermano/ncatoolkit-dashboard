@@ -6,8 +6,10 @@ const TOOLKIT_API_KEY = process.env.TOOLKIT_API_KEY;
 
 type BatchRequestBody = {
   imageUrls: string[];
-  imageUrlField: string; // ex.: "image_url"
-  payloadTemplate: Record<string, unknown>;
+  imageUrlField?: string;
+  duration?: number;
+  baseId?: number;
+  extraPayload?: Record<string, unknown>;
 };
 
 export async function POST(req: NextRequest) {
@@ -15,101 +17,105 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(
       {
         error:
-          'Missing TOOLKIT_API_URL or TOOLKIT_API_KEY on the server. Configure estas variáveis no container.',
+          'Missing TOOLKIT_API_URL ou TOOLKIT_API_KEY no servidor. Configure estas variáveis no container.',
       },
       { status: 500 },
     );
   }
 
   let body: BatchRequestBody;
-
   try {
     body = (await req.json()) as BatchRequestBody;
   } catch {
     return NextResponse.json(
-      { error: 'Body inválido. Envie um JSON válido.' },
+      { error: 'Body JSON inválido.' },
       { status: 400 },
     );
   }
 
-  const { imageUrls, imageUrlField, payloadTemplate } = body;
-
-  if (!imageUrls || imageUrls.length === 0) {
-    return NextResponse.json(
-      { error: 'Informe pelo menos uma URL de imagem.' },
-      { status: 400 },
-    );
-  }
-
-  if (!imageUrlField) {
+  const imageUrls = Array.isArray(body.imageUrls) ? body.imageUrls : [];
+  if (imageUrls.length === 0) {
     return NextResponse.json(
       {
         error:
-          'Campo "imageUrlField" é obrigatório (ex.: "image_url", conforme a doc do NCA Toolkit).',
+          'imageUrls deve ser um array com pelo menos 1 URL de imagem.',
       },
       { status: 400 },
     );
   }
 
-  if (!payloadTemplate || typeof payloadTemplate !== 'object') {
-    return NextResponse.json(
-      {
-        error:
-          '"payloadTemplate" deve ser um objeto JSON com o restante dos parâmetros exigidos pelo endpoint.',
-      },
-      { status: 400 },
-    );
-  }
+  const imageUrlField = body.imageUrlField || 'image_url';
+  const duration =
+    typeof body.duration === 'number' && body.duration > 0
+      ? body.duration
+      : 15;
+  const baseId =
+    typeof body.baseId === 'number' ? body.baseId : 1;
+  const extraPayload =
+    (body.extraPayload ?? {}) as Record<string, unknown>;
 
-  const baseUrl = TOOLKIT_API_URL.replace(/\/$/, '');
-  const endpoint = `${baseUrl}/v1/image/convert/video`;
+  const jobs = await Promise.all(
+    imageUrls.map(async (imageUrl, index) => {
+      const payload: Record<string, unknown> = {
+        ...extraPayload,
+        [imageUrlField]: imageUrl,
+        length: duration,
+        id: baseId + index,
+      };
 
-  const results: Array<{
-    imageUrl: string;
-    ok: boolean;
-    status: number;
-    data?: unknown;
-    error?: string;
-  }> = [];
-
-  for (const imageUrl of imageUrls) {
-    const payload = {
-      ...payloadTemplate,
-      [imageUrlField]: imageUrl,
-    };
-
-    try {
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': TOOLKIT_API_KEY,
-        },
-        body: JSON.stringify(payload),
-      });
-
-      let data: unknown = null;
       try {
-        data = await res.json();
-      } catch {
-        // se não for JSON, ignoramos
+        const res = await fetch(
+          `${TOOLKIT_API_URL}/v1/image/convert/video`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-api-key': TOOLKIT_API_KEY,
+            },
+            body: JSON.stringify(payload),
+          },
+        );
+
+        let data: unknown = null;
+        try {
+          data = await res.json();
+        } catch {
+          // se não for JSON, ignoramos ou guardamos como null
+        }
+
+        if (!res.ok) {
+          return {
+            imageUrl,
+            id: baseId + index,
+            ok: false,
+            status: res.status,
+            data,
+            error:
+              (data as any)?.message ??
+              `Toolkit retornou status ${res.status}.`,
+          };
+        }
+
+        return {
+          imageUrl,
+          id: baseId + index,
+          ok: true,
+          status: res.status,
+          data,
+        };
+      } catch (error: any) {
+        return {
+          imageUrl,
+          id: baseId + index,
+          ok: false,
+          status: 500,
+          error:
+            error?.message ??
+            'Erro de rede ao chamar a NCA Toolkit API.',
+        };
       }
+    }),
+  );
 
-      results.push({
-        imageUrl,
-        ok: res.ok,
-        status: res.status,
-        data,
-      });
-    } catch (err) {
-      results.push({
-        imageUrl,
-        ok: false,
-        status: 0,
-        error: (err as Error).message,
-      });
-    }
-  }
-
-  return NextResponse.json({ results });
+  return NextResponse.json({ jobs }, { status: 200 });
 }
