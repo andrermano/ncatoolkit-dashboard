@@ -65,13 +65,11 @@ export default function Home() {
                 );
               })}
             </div>
-
             {/* link para a nova tela de batch */}
-            <Link
-              href="/image-to-video"
-              className="flex items-center justify-center px-4 py-3 text-sm font-semibold text-purple-700 border-l border-gray-200 bg-purple-50 hover:bg-purple-100 transition-colors whitespace-nowrap"
-            >
-              Image → Video (batch)
+            <Link href="/image-to-video" className="flex">
+              <span className="inline-flex items-center justify-center gap-2 px-5 py-3 text-sm font-medium text-purple-700 bg-purple-50 hover:bg-purple-100 border-l border-gray-200 whitespace-nowrap no-underline">
+                Image → Video (batch)
+              </span>
             </Link>
           </div>
         </div>
