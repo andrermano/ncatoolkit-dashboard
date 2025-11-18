@@ -6,20 +6,26 @@ type ApiResult = {
   imageUrl: string;
   ok: boolean;
   status: number;
-  data?: any; // <-- era unknown, trocamos pra any
+  data?: unknown;
   error?: string;
 };
 
-export default function ImageToVideoBatchPage() {
+export default function ImageToVideoPage() {
   const [imageUrlsText, setImageUrlsText] = useState('');
-  const [imageUrlField, setImageUrlField] = useState('image_url'); // nome do campo conforme docs do NCA
+  const [imageUrlField, setImageUrlField] = useState('image_url');
+
+  // ⚠️ IMPORTANTE:
+  // A versão atual da NCA que você está usando NÃO aceita
+  // duration_seconds / output_format / zoom_mode.
+  // Então o template padrão vai só com webhook_url (opcional).
   const [payloadTemplateText, setPayloadTemplateText] = useState(
-    `{
-  "output_format": "mp4",
-  "duration_seconds": 10,
-  "zoom_mode": "ken_burns",
-  "webhook_url": ""
-}`,
+    JSON.stringify(
+      {
+        webhook_url: '',
+      },
+      null,
+      2,
+    ),
   );
 
   const [results, setResults] = useState<ApiResult[]>([]);
@@ -30,36 +36,35 @@ export default function ImageToVideoBatchPage() {
     event.preventDefault();
     setErrorMessage(null);
     setResults([]);
-    setLoading(true);
 
     const imageUrls = imageUrlsText
       .split('\n')
       .map((line) => line.trim())
-      .filter((line) => line.length > 0);
+      .filter(Boolean);
 
     if (imageUrls.length === 0) {
-      setErrorMessage('Coloque pelo menos uma URL de imagem (uma por linha).');
-      setLoading(false);
+      setErrorMessage('Informe pelo menos uma URL de imagem (uma por linha).');
       return;
     }
 
-    let payloadTemplate: Record<string, unknown>;
-    try {
-      payloadTemplate = JSON.parse(payloadTemplateText);
-    } catch (err) {
-      setErrorMessage(
-        'Payload template não é um JSON válido. Verifique aspas, vírgulas e chaves.',
-      );
-      setLoading(false);
-      return;
+    let payloadTemplate: Record<string, unknown> = {};
+    if (payloadTemplateText.trim()) {
+      try {
+        payloadTemplate = JSON.parse(payloadTemplateText);
+      } catch (error) {
+        setErrorMessage(
+          'Payload JSON inválido: ' + (error as Error).message,
+        );
+        return;
+      }
     }
 
+    setLoading(true);
+
     try {
-      const response = await fetch('/api/toolkit/image-to-video-batch', {
+      const res = await fetch('/api/toolkit/image-to-video-batch', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           imageUrls,
           imageUrlField,
@@ -67,19 +72,21 @@ export default function ImageToVideoBatchPage() {
         }),
       });
 
-      if (!response.ok) {
-        const errorBody = await response.json().catch(() => null);
-        const msg =
-          (errorBody && (errorBody.error as string)) ||
-          `Erro ao chamar a API interna (status ${response.status}).`;
-        setErrorMessage(msg);
-      } else {
-        const data = (await response.json()) as { results: ApiResult[] };
-        setResults(data.results || []);
+      const json = await res.json();
+
+      if (!res.ok) {
+        setErrorMessage(
+          json?.error ??
+            `Erro ao enviar as imagens para o Toolkit (status ${res.status}).`,
+        );
+        return;
       }
-    } catch (err) {
+
+      setResults((json.jobs ?? []) as ApiResult[]);
+    } catch (error) {
       setErrorMessage(
-        `Erro inesperado ao chamar a API: ${(err as Error).message}`,
+        'Erro de rede ao conversar com o backend: ' +
+          (error as Error).message,
       );
     } finally {
       setLoading(false);
@@ -87,183 +94,140 @@ export default function ImageToVideoBatchPage() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-50 flex flex-col">
-      <header className="border-b border-slate-800 px-6 py-4">
+    <div className="space-y-6">
+      <header className="space-y-1">
         <h1 className="text-2xl font-semibold">
-          NCA Toolkit – Imagem &rarr; Vídeo (lote)
+          Image → Video (batch)
         </h1>
-        <p className="text-sm text-slate-400 mt-1 max-w-2xl">
-          Usa o endpoint{' '}
-          <code className="font-mono">/v1/image/convert/video</code> do No-Code
-          Architects Toolkit para transformar várias imagens em vídeos de uma
-          vez. Você define o <span className="font-mono">payload</span> base
-          conforme a documentação oficial e o dashboard dispara um job para cada
-          imagem.
+        <p className="text-sm text-slate-400">
+          Cria vários jobs no endpoint{' '}
+          <code className="font-mono text-xs">
+            /v1/image/convert/video
+          </code>{' '}
+          do No-Code Architects Toolkit a partir de uma lista de URLs
+          de imagem.
         </p>
       </header>
 
-      <main className="flex-1 px-6 py-6 flex flex-col gap-6 lg:flex-row lg:items-start">
-        {/* FORMULÁRIO */}
-        <section className="w-full lg:w-1/2 space-y-4">
-          <form
-            onSubmit={handleSubmit}
-            className="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-4 shadow-lg"
-          >
-            <div>
-              <label className="block text-sm font-medium mb-1">
-                URLs das imagens (uma por linha)
-              </label>
-              <textarea
-                className="w-full h-40 rounded-md bg-slate-950 border border-slate-700 px-3 py-2 text-sm font-mono resize-y focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                placeholder={`https://meu-bucket.s3.amazonaws.com/imagem1.png
-https://meu-bucket.s3.amazonaws.com/imagem2.png
-https://meu-bucket.s3.amazonaws.com/imagem3.png`}
-                value={imageUrlsText}
-                onChange={(e) => setImageUrlsText(e.target.value)}
-              />
-              <p className="text-xs text-slate-500 mt-1">
-                Use as URLs que o NCA Toolkit consegue acessar (S3, GCS, storage
-                público, etc.).
-              </p>
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium mb-1">
-                Nome do campo de URL da imagem no payload
-              </label>
-              <input
-                type="text"
-                className="w-full rounded-md bg-slate-950 border border-slate-700 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                value={imageUrlField}
-                onChange={(e) => setImageUrlField(e.target.value)}
-              />
-              <p className="text-xs text-slate-500 mt-1">
-                Exemplo: <code className="font-mono">image_url</code>. Confere
-                na documentação do <strong>/v1/image/convert/video</strong> qual
-                é o nome correto do campo (se mudar, é só trocar aqui).
-              </p>
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium mb-1">
-                Payload template (JSON)
-              </label>
-              <textarea
-                className="w-full h-52 rounded-md bg-slate-950 border border-slate-700 px-3 py-2 text-xs font-mono resize-y focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                value={payloadTemplateText}
-                onChange={(e) => setPayloadTemplateText(e.target.value)}
-              />
-              <p className="text-xs text-slate-500 mt-1">
-                Esse JSON será enviado para o NCA Toolkit para cada imagem,
-                sobrescrevendo apenas o campo{' '}
-                <code className="font-mono">{imageUrlField}</code> com a URL de
-                cada linha acima. Use aqui exatamente o formato que a doc
-                oficial pede (campos de duração, zoom, formato, webhook_url
-                etc.).
-              </p>
-            </div>
-
-            {errorMessage && (
-              <div className="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-200">
-                {errorMessage}
-              </div>
-            )}
-
-            <button
-              type="submit"
-              disabled={loading}
-              className="inline-flex items-center justify-center rounded-md bg-emerald-500 px-4 py-2 text-sm font-medium text-slate-950 hover:bg-emerald-400 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
-            >
-              {loading ? 'Processando imagens...' : 'Enviar para NCA Toolkit'}
-            </button>
-          </form>
-
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 text-xs text-slate-400 space-y-2">
-            <p className="font-semibold text-slate-200">
-              Como usar com a documentação oficial
+      <form
+        onSubmit={handleSubmit}
+        className="space-y-4 rounded-lg border border-slate-800 bg-slate-900 p-4"
+      >
+        <div className="grid gap-4 md:grid-cols-2">
+          {/* Lista de imagens */}
+          <div className="space-y-2">
+            <label className="block text-xs font-medium uppercase tracking-wide text-slate-300">
+              Image URLs (uma por linha)
+            </label>
+            <textarea
+              className="h-40 w-full rounded-md border border-slate-700 bg-slate-950/60 p-2 text-xs font-mono text-slate-100 outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500"
+              placeholder="https://storage.googleapis.com/bucket/imagem_01.png&#10;https://storage.googleapis.com/bucket/imagem_02.png&#10;..."
+              value={imageUrlsText}
+              onChange={(e) => setImageUrlsText(e.target.value)}
+            />
+            <p className="text-[11px] text-slate-400">
+              Cada linha será usada para criar um job separado.
             </p>
-            <ul className="list-disc list-inside space-y-1">
-              <li>
-                Abra a doc do endpoint{' '}
-                <code className="font-mono">/v1/image/convert/video</code> no
-                repo original.
-              </li>
-              <li>
-                Monte um payload válido no campo{' '}
-                <span className="font-mono">Payload template</span> (sem a parte
-                da URL da imagem ou já incluindo, tanto faz).
-              </li>
-              <li>
-                Informe o campo de URL da imagem em{' '}
-                <span className="font-mono">Nome do campo</span> (ex.{' '}
-                <code className="font-mono">image_url</code>).
-              </li>
-              <li>
-                Cole várias URLs de imagem (uma por linha) e clique em{' '}
-                <strong>Enviar</strong>. O dashboard dispara um job por imagem e
-                mostra a resposta bruta da API para cada uma.
-              </li>
-            </ul>
           </div>
-        </section>
 
-        {/* RESULTADOS */}
-        <section className="w-full lg:w-1/2 space-y-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-lg min-h-[200px]">
-            <h2 className="text-lg font-semibold mb-2">
-              Resultados dos jobs (imagem → vídeo)
-            </h2>
+          {/* Template de payload */}
+          <div className="space-y-2">
+            <label className="block text-xs font-medium uppercase tracking-wide text-slate-300">
+              Payload template (JSON)
+            </label>
+            <textarea
+              className="h-40 w-full rounded-md border border-slate-700 bg-slate-950/60 p-2 text-xs font-mono text-slate-100 outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500"
+              value={payloadTemplateText}
+              onChange={(e) => setPayloadTemplateText(e.target.value)}
+            />
+            <p className="text-[11px] text-slate-400">
+              O campo{' '}
+              <code className="font-mono text-[11px]">
+                {imageUrlField}
+              </code>{' '}
+              será preenchido automaticamente para cada imagem.
+              <br />
+              Se a API reclamar de &quot;Additional properties&quot;,
+              remova/ajuste os campos para o formato aceito pela sua
+              instalação da NCA.
+            </p>
+          </div>
+        </div>
 
-            {results.length === 0 && !loading && (
-              <p className="text-sm text-slate-500">
-                Nenhum job executado ainda. Envie algumas imagens pelo
-                formulário ao lado.
-              </p>
-            )}
+        {/* Campo do nome do atributo de URL */}
+        <div className="space-y-1">
+          <label className="block text-xs font-medium uppercase tracking-wide text-slate-300">
+            Nome do campo da URL da imagem
+          </label>
+          <input
+            className="w-full max-w-xs rounded-md border border-slate-700 bg-slate-950/60 px-2 py-1 text-xs font-mono text-slate-100 outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500"
+            value={imageUrlField}
+            onChange={(e) => setImageUrlField(e.target.value)}
+          />
+          <p className="text-[11px] text-slate-400">
+            Em muitas versões da API esse campo é{' '}
+            <code className="font-mono text-[11px]">image_url</code>.
+          </p>
+        </div>
 
-            {results.length > 0 && (
-              <div className="space-y-3 max-h-[480px] overflow-y-auto pr-1">
-                {results.map((r, idx) => (
-                  <div
-                    key={`${r.imageUrl}-${idx}`}
-                    className="border border-slate-800 rounded-lg p-3 bg-slate-950/60"
-                  >
-                    <div className="flex items-center justify-between gap-2 mb-2">
-                      <div className="text-xs text-slate-400 truncate">
-                        <span className="font-semibold text-slate-200">
-                          Imagem:
-                        </span>{' '}
-                        <span className="break-all">{r.imageUrl}</span>
-                      </div>
-                      <span
-                        className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${
-                          r.ok
-                            ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/40'
-                            : 'bg-red-500/15 text-red-300 border border-red-500/40'
-                        }`}
-                      >
-                        {r.ok ? 'OK' : 'ERRO'} · {r.status}
-                      </span>
-                    </div>
+        <button
+          type="submit"
+          disabled={loading}
+          className="inline-flex items-center justify-center rounded-md border border-sky-500 bg-sky-600 px-4 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {loading ? 'Enviando jobs…' : 'Criar jobs de vídeo'}
+        </button>
+      </form>
 
-                    {r.error && (
-                      <p className="text-xs text-red-300 mb-2">
-                        Erro: {r.error}
-                      </p>
-                    )}
+      {errorMessage && (
+        <div className="rounded-md border border-red-500 bg-red-950/40 px-3 py-2 text-sm text-red-200">
+          {errorMessage}
+        </div>
+      )}
 
-                    {r.data && (
-                      <pre className="text-[11px] leading-snug bg-slate-900 border border-slate-800 rounded-md p-2 overflow-x-auto">
-                        {JSON.stringify(r.data, null, 2)}
-                      </pre>
-                    )}
+      {results.length > 0 && (
+        <section className="space-y-3">
+          <h2 className="text-lg font-medium">
+            Resultados dos jobs (imagem → vídeo)
+          </h2>
+          <div className="space-y-3">
+            {results.map((r, idx) => (
+              <div
+                key={`${r.imageUrl}-${idx}`}
+                className="rounded-lg border border-slate-800 bg-slate-950/70 p-3 text-xs md:text-sm"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <div className="break-all font-mono">
+                    Imagem: {r.imageUrl}
                   </div>
-                ))}
+                  <span
+                    className={
+                      'inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold ' +
+                      (r.ok
+                        ? 'border-emerald-500/70 bg-emerald-900/50 text-emerald-100'
+                        : 'border-red-500/70 bg-red-900/50 text-red-100')
+                    }
+                  >
+                    {r.ok ? `OK · ${r.status}` : `ERRO · ${r.status}`}
+                  </span>
+                </div>
+
+                {typeof r.data !== 'undefined' && (
+                  <pre className="mt-2 max-h-60 overflow-auto rounded-md border border-slate-800 bg-slate-900 p-2 text-[11px] leading-snug">
+                    {JSON.stringify(r.data as any, null, 2)}
+                  </pre>
+                )}
+
+                {r.error && (
+                  <p className="mt-1 text-[11px] text-red-300">
+                    {r.error}
+                  </p>
+                )}
               </div>
-            )}
+            ))}
           </div>
         </section>
-      </main>
+      )}
     </div>
   );
 }
