@@ -6,7 +6,7 @@ type ApiResult = {
   imageUrl: string;
   ok: boolean;
   status: number;
-  data?: unknown;
+  data?: any; // <-- era unknown, trocamos pra any
   error?: string;
 };
 
@@ -93,11 +93,12 @@ export default function ImageToVideoBatchPage() {
           NCA Toolkit – Imagem &rarr; Vídeo (lote)
         </h1>
         <p className="text-sm text-slate-400 mt-1 max-w-2xl">
-          Usa o endpoint <code className="font-mono">/v1/image/convert/video</code>{' '}
-          do No-Code Architects Toolkit para transformar várias imagens em
-          vídeos de uma vez. Você define o{' '}
-          <span className="font-mono">payload</span> base conforme a documentação
-          oficial e o dashboard dispara um job para cada imagem.
+          Usa o endpoint{' '}
+          <code className="font-mono">/v1/image/convert/video</code> do No-Code
+          Architects Toolkit para transformar várias imagens em vídeos de uma
+          vez. Você define o <span className="font-mono">payload</span> base
+          conforme a documentação oficial e o dashboard dispara um job para cada
+          imagem.
         </p>
       </header>
 
@@ -121,8 +122,8 @@ https://meu-bucket.s3.amazonaws.com/imagem3.png`}
                 onChange={(e) => setImageUrlsText(e.target.value)}
               />
               <p className="text-xs text-slate-500 mt-1">
-                Use as URLs que o NCA Toolkit consegue acessar (S3, GCS,
-                storage público, etc.).
+                Use as URLs que o NCA Toolkit consegue acessar (S3, GCS, storage
+                público, etc.).
               </p>
             </div>
 
@@ -156,8 +157,9 @@ https://meu-bucket.s3.amazonaws.com/imagem3.png`}
                 Esse JSON será enviado para o NCA Toolkit para cada imagem,
                 sobrescrevendo apenas o campo{' '}
                 <code className="font-mono">{imageUrlField}</code> com a URL de
-                cada linha acima. Use aqui exatamente o formato que a doc oficial
-                pede (campos de duração, zoom, formato, webhook_url etc.).
+                cada linha acima. Use aqui exatamente o formato que a doc
+                oficial pede (campos de duração, zoom, formato, webhook_url
+                etc.).
               </p>
             </div>
 
