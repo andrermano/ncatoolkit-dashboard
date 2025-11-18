@@ -6,8 +6,8 @@ WORKDIR /app
 # Copy package files
 COPY package*.json ./
 
-# Install dependencies
-RUN npm ci
+# Install dependencies + Tailwind PostCSS plugin
+RUN npm ci && npm install --save-dev @tailwindcss/postcss
 
 # Stage 2: Builder
 FROM node:20-alpine AS builder
@@ -30,7 +30,7 @@ ENV NEXT_TELEMETRY_DISABLED=1
 
 # Create non-root user
 RUN addgroup --system --gid 1001 nodejs \
- && adduser --system --uid 1001 nextjs
+  && adduser --system --uid 1001 nextjs
 
 # Copy built application
 COPY --from=builder /app/public ./public
