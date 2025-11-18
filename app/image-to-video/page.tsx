@@ -25,6 +25,19 @@ type UiJob = {
   rawStatus?: unknown;
 };
 
+type JobStatusApiItem = {
+  jobId: string;
+  ok: boolean;
+  status: number;
+  data?: unknown;
+  error?: string;
+};
+
+type JobStatusApiResponse = {
+  results?: JobStatusApiItem[];
+  error?: string;
+};
+
 function extractVideoUrl(data: unknown): string | null {
   if (!data || typeof data !== 'object') {
     return null;
@@ -45,7 +58,8 @@ function extractVideoUrl(data: unknown): string | null {
     for (const value of values) {
       if (typeof value === 'string') {
         const lower = value.toLowerCase();
-        const isHttp = lower.startsWith('http://') || lower.startsWith('https://');
+        const isHttp =
+          lower.startsWith('http://') || lower.startsWith('https://');
         const looksLikeVideo =
           lower.includes('.mp4') ||
           lower.includes('.webm') ||
@@ -253,7 +267,7 @@ export default function ImageToVideoPage() {
         body: JSON.stringify({ jobIds }),
       });
 
-      const json = await res.json();
+      const json = (await res.json()) as JobStatusApiResponse;
 
       if (!res.ok) {
         setErrorMessage(
@@ -263,13 +277,7 @@ export default function ImageToVideoPage() {
         return;
       }
 
-      const statuses = (json.statuses ?? []) as {
-        jobId: string;
-        ok: boolean;
-        status: number;
-        data?: unknown;
-        error?: string;
-      }[];
+      const statuses = json.results ?? [];
 
       setJobs((prev) =>
         prev.map((job) => {
@@ -406,10 +414,8 @@ export default function ImageToVideoPage() {
                     />
                     <p className="text-[11px] text-gray-500">
                       Este valor será enviado como{' '}
-                      <code className="font-mono text-[11px]">
-                        length
-                      </code>{' '}
-                      em todos os jobs.
+                      <code className="font-mono text-[11px]">length</code> em
+                      todos os jobs.
                     </p>
                   </div>
 
@@ -431,8 +437,8 @@ export default function ImageToVideoPage() {
                     />
                     <p className="text-[11px] text-gray-500">
                       O primeiro job recebe{' '}
-                      <code className="font-mono text-[11px]">id</code>{' '}
-                      igual a este valor (como string), o próximo +1, etc.
+                      <code className="font-mono text-[11px]">id</code> igual a
+                      este valor (como string), o próximo +1, etc.
                     </p>
                   </div>
                 </div>
@@ -449,10 +455,8 @@ export default function ImageToVideoPage() {
                   />
                   <p className="text-[11px] text-gray-500">
                     Normalmente é{' '}
-                    <code className="font-mono text-[11px]">
-                      image_url
-                    </code>
-                    , igual ao que você já usa no n8n.
+                    <code className="font-mono text-[11px]">image_url</code>,
+                    igual ao que você já usa no n8n.
                   </p>
                 </div>
 
@@ -467,16 +471,13 @@ export default function ImageToVideoPage() {
                     onChange={(e) => setExtraPayloadText(e.target.value)}
                   />
                   <p className="text-[11px] text-gray-500">
-                    Tudo que for definido aqui será mesclado no payload de
-                    cada job. Campos{' '}
+                    Tudo que for definido aqui será mesclado no payload de cada
+                    job. Campos{' '}
                     <code className="font-mono text-[11px]">
                       {imageUrlField}
                     </code>
                     ,{' '}
-                    <code className="font-mono text-[11px]">
-                      length
-                    </code>{' '}
-                    e{' '}
+                    <code className="font-mono text-[11px]">length</code> e{' '}
                     <code className="font-mono text-[11px]">id</code> são
                     preenchidos automaticamente.
                   </p>
@@ -549,8 +550,8 @@ export default function ImageToVideoPage() {
                 <code className="font-mono text-[11px]">
                   Additional properties
                 </code>
-                , remova do payload extra qualquer campo não reconhecido
-                pela sua instância da NCA.
+                , remova do payload extra qualquer campo não reconhecido pela
+                sua instância da NCA.
               </p>
             </div>
           </aside>
@@ -604,10 +605,8 @@ export default function ImageToVideoPage() {
                             : 'bg-yellow-50 text-yellow-700 border border-yellow-200'
                         }`}
                       >
-                        {job.statusStage === 'finished' &&
-                          'Finalizado'}
-                        {job.statusStage === 'processing' &&
-                          'Processando'}
+                        {job.statusStage === 'finished' && 'Finalizado'}
+                        {job.statusStage === 'processing' && 'Processando'}
                         {job.statusStage === 'pending' && 'Pendente'}
                         {job.statusStage === 'error' && 'Erro'}
                       </span>
