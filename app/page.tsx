@@ -4,6 +4,7 @@ import { useState } from 'react';
 import ConvertForm from '@/components/ConvertForm';
 import TranscribeForm from '@/components/TranscribeForm';
 import { FileVideo, Mic, Download, Settings } from 'lucide-react';
+import Link from 'next/link';
 
 type ActiveTab = 'convert' | 'transcribe' | 'download';
 
@@ -32,7 +33,8 @@ export default function Home() {
             </div>
             <div className="flex items-center gap-2">
               <Settings className="h-5 w-5 text-gray-400" />
-              <span className="text-sm text-gray-500">v1.0.0</span>
+              {/* versão atualizada */}
+              <span className="text-sm text-gray-500">v1.1.0</span>
             </div>
           </div>
         </div>
@@ -42,24 +44,35 @@ export default function Home() {
       <main className="container mx-auto px-4 py-8">
         {/* Tab Navigation */}
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 mb-6">
-          <div className="flex border-b border-gray-200">
-            {tabs.map((tab) => {
-              const Icon = tab.icon;
-              return (
-                <button
-                  key={tab.id}
-                  onClick={() => setActiveTab(tab.id as ActiveTab)}
-                  className={`flex-1 flex items-center justify-center gap-2 px-6 py-4 font-medium transition-colors ${
-                    activeTab === tab.id
-                      ? 'text-blue-600 border-b-2 border-blue-600 bg-blue-50'
-                      : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
-                  }`}
-                >
-                  <Icon className="h-5 w-5" />
-                  {tab.label}
-                </button>
-              );
-            })}
+          <div className="flex items-stretch border-b border-gray-200">
+            {/* abas originais */}
+            <div className="flex flex-1">
+              {tabs.map((tab) => {
+                const Icon = tab.icon;
+                return (
+                  <button
+                    key={tab.id}
+                    onClick={() => setActiveTab(tab.id as ActiveTab)}
+                    className={`flex-1 flex items-center justify-center gap-2 px-6 py-4 font-medium transition-colors ${
+                      activeTab === tab.id
+                        ? 'text-blue-600 border-b-2 border-blue-600 bg-blue-50'
+                        : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
+                    }`}
+                  >
+                    <Icon className="h-5 w-5" />
+                    {tab.label}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* link para a nova tela de batch */}
+            <Link
+              href="/image-to-video"
+              className="flex items-center justify-center px-4 py-3 text-sm font-semibold text-purple-700 border-l border-gray-200 bg-purple-50 hover:bg-purple-100 transition-colors whitespace-nowrap"
+            >
+              Image → Video (batch)
+            </Link>
           </div>
         </div>
 
@@ -126,3 +139,4 @@ export default function Home() {
     </div>
   );
 }
+
