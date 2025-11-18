@@ -635,13 +635,13 @@ export default function ImageToVideoPage() {
                     </div>
                   )}
 
-                  {job.rawStatus && (
+                  {!!job.rawStatus && (
                     <details className="mt-3">
                       <summary className="cursor-pointer text-xs text-gray-700">
                         Ver status bruto
                       </summary>
-                      <pre className="mt-1 max-h-60 overflow-auto rounded-md bg-gray-900 text-gray-100 text-[11px] leading-snug px-3 py-2">
-                        {JSON.stringify(job.rawStatus as unknown, null, 2)}
+                      <pre className="mt-1 max-h-60 overflow-auto rounded bg-gray-900 p-3 text-xs text-green-300">
+                        {JSON.stringify(job.rawStatus as any, null, 2)}
                       </pre>
                     </details>
                   )}
